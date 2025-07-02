@@ -1,0 +1,38 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "设备已配置",
+      "single_instance_allowed": "该集成已经设置完成，只允许一个实例。"
+    },
+    "error": {
+      "cannot_connect": "连接失败",
+      "invalid_auth": "身份验证无效",
+      "unknown": "发生未知错误",
+      "auth_failed_custom": "登录失败：{custom_error}"
+    },
+    "step": {
+      "user": {
+        "data": {
+          "username": "邮箱",
+          "password": "密码"
+        },
+        "description": "你可以在 [此页面]({get_credentials_url}) 获取用户名和密码。"
+      }
+    }
+  },
+  "issues": {
+    "restart_required_after_setup": {
+      "title": "建议重启 Home Assistant",
+      "description": "HA Tunnel 集成 ({integration_name}) 已成功安装。为确保所有功能正常工作，建议重启 Home Assistant。"
+    },
+    "restart_required_after_config": {
+      "title": "重启 Home Assistant",
+      "description": "{integration_name} 配置完成！由于集成修改了设置，需要重启 Home Assistant 才能正常工作。"
+    }
+  },
+  "system_health": {
+    "info": {
+      "http_configured": "HA Tunnel 配置状态"
+    }
+  }
+}

@@ -1,0 +1,9 @@
+start_tunnel:
+  name: Start HA Tunnel
+  description: Starts the HA tunnel for remote port forwarding.
+  fields: {}
+
+stop_tunnel:
+  name: Stop HA Tunnel
+  description: Stops the HA tunnel and closes the connection.
+  fields: {}

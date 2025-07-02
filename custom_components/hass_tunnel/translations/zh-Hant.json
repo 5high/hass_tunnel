@@ -1,0 +1,38 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "裝置已設定",
+      "single_instance_allowed": "該整合已經設定完成，只允許一個實例。"
+    },
+    "error": {
+      "cannot_connect": "連線失敗",
+      "invalid_auth": "身份驗證無效",
+      "unknown": "發生未知錯誤",
+      "auth_failed_custom": "登入失敗：{custom_error}"
+    },
+    "step": {
+      "user": {
+        "data": {
+          "username": "電子郵件",
+          "password": "密碼"
+        },
+        "description": "你可以在 [此頁面]({get_credentials_url}) 取得使用者名稱和密碼。"
+      }
+    }
+  },
+  "issues": {
+    "restart_required_after_setup": {
+      "title": "建議重新啟動 Home Assistant",
+      "description": "HA Tunnel 整合 ({integration_name}) 已成功安裝。為確保所有功能正常運作，建議重新啟動 Home Assistant。"
+    },
+    "restart_required_after_config": {
+      "title": "重新啟動 Home Assistant",
+      "description": "{integration_name} 設定完成！由於整合修改了設定，需要重新啟動 Home Assistant 才能正常運作。"
+    }
+  },
+  "system_health": {
+    "info": {
+      "http_configured": "HA Tunnel 設定狀態"
+    }
+  }
+}

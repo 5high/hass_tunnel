@@ -1,0 +1,38 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "Device is already configured",
+      "single_instance_allowed": "This integration has been set up, only one instance allowed."
+    },
+    "error": {
+      "cannot_connect": "Failed to connect",
+      "invalid_auth": "Invalid authentication",
+      "unknown": "Unknown error occurred",
+      "auth_failed_custom": "Login failed: {custom_error}"
+    },
+    "step": {
+      "user": {
+        "data": {
+          "username": "Email",
+          "password": "Password"
+        },
+        "description": "You can get your username and password from [this page]({get_credentials_url})."
+      }
+    }
+  },
+  "issues": {
+    "restart_required_after_setup": {
+      "title": "Restart Home Assistant Recommended",
+      "description": "HA Tunnel integration ({integration_name}) has been successfully installed. It is recommended to restart Home Assistant to ensure all features work properly."
+    },
+    "restart_required_after_config": {
+      "title": "Restart Home Assistant Required",
+      "description": "{integration_name} configuration completed! A restart is required for the tunnel settings to take effect."
+    }
+  },
+  "system_health": {
+    "info": {
+      "http_configured": "HA Tunnel Configuration Status"
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "HA Tunnel",
+  "content_in_root": false,
+  "render_readme": true,
+  "domains": ["hass_tunnel"],
+  "country": "cn"
+}
