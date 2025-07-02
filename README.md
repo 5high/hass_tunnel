@@ -2,7 +2,7 @@
 
 **HA Tunnel** 是一个为 Home Assistant 提供内网穿透服务的集成。适用于无法直接从公网访问 Home Assistant 的用户。
 
-![logo](https://github.com/5high/hass_tunnel/icon.png)
+![logo](https://github.com/5high/hass_tunnel/custom_components/hass_tunnel/icon.png)
 
 ## ✨ 功能特点
 
