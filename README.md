@@ -21,7 +21,7 @@
 
 请前往以下地址注册并获取账号信息：
 
-[https://example.com](https://example.com)
+[https://5high.top](https://5high.top)
 
 > 注册后可获得专属访问地址及端口，用于配置集成
 
@@ -35,10 +35,6 @@
 
   - 请检查是否填写了正确的用户名和密码
   - 确保本地 Home Assistant 端口可访问（如 8123）
-
-- **Q: icon 没有显示？**
-  - 请确认 `manifest.json` 中已添加 `"icon": "icon.png"`
-  - 确保 `icon.png` 位于集成根目录，且尺寸建议为 256x256
 
 ## 📎 项目地址
 
