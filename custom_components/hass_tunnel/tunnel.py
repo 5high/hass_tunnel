@@ -181,78 +181,107 @@ class ManagedTunnel:
             hass.loop,
         )
 
-    def _maintain_loop(self):
-        while not self._stop_event.is_set():
-            try:
-                success, info = login_with_retry(
-                    self.entry.data["username"], self.entry.data["password"], AUTH_URL
+def _maintain_loop(self):
+    BASE_DELAY = 5       # 初始等待时间（秒）
+    MAX_DELAY = 300      # 最大等待时间（秒）
+    retry_attempt = 0    # 登录失败计数
+
+    while not self._stop_event.is_set():
+        try:
+            success, info = login_with_retry(
+                self.entry.data["username"], 
+                self.entry.data["password"], 
+                AUTH_URL
+            )
+
+            if not success:
+                retry_attempt += 1
+                # 计算指数级延迟时间
+                wait_time = min(BASE_DELAY * (2 ** (retry_attempt - 1)), MAX_DELAY)
+                next_try_time = datetime.now() + timedelta(seconds=wait_time)
+                next_try_str = next_try_time.strftime("%H:%M:%S")
+
+                _LOGGER.warning(
+                    f"❌ 登录失败 (第 {retry_attempt} 次)，将在 {wait_time}s 后（约 {next_try_str}）重试"
                 )
-                if not success:
-                    _LOGGER.warning("❌ Login failed")
-                    message = (
-                        f"**🚫 登录失败通知**\n\n"
-                        f"- 👤 用户名: `{self.entry.data['username']}`\n"
-                        f"- 🔐 ❌ 登录未成功，可能由于密码错误或服务器问题。\n问题修正后需要重启Home Assistant\n\n"
-                        f"📘 [点击查看使用说明]({WEBSITE})"
-                    )
-                    self._notify(f"{self.entry.data.get('name')} 登录失败", message)
-                    return  # 中断逻辑，不再继续
 
-                self.tunnel_client = paramiko.SSHClient()
-                self.tunnel_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-                _LOGGER.info(f"🔗 Connecting to Tunnel server...")
-                self.tunnel_client.connect(
-                    info.get("tunnel_server"),
-                    port=int(info.get("tunnel_port")),  # 如果为空就默认22
-                    username=info.get("tunnel_user"),
-                    password=info.get("tunnel_password"),
-                    timeout=15,
-                )
-                self.tunnel_client.get_transport().set_keepalive(30)
-                transport = self.tunnel_client.get_transport()
-                if not transport:
-                    raise Exception("Failed to get transport")
-
-                self.forward_server = ForwardServer(
-                    transport,
-                    self.LOCAL_HOST,
-                    self.local_port,
-                    notify_func=self._notify,
-                    entry=self.entry,
-                    login_info=info,
-                )
-                self.forward_server.start()
-
-                _LOGGER.info("🚀 Tunnel established")
-
-                while transport.is_active() and not self._stop_event.is_set():
-                    time.sleep(0.5)
-
-            except Exception as e:
-                _LOGGER.error(f"❌ Error during connection or maintenance ")
                 message = (
-                    f"**🚫 隧道连接失败**\n\n"
-                    f"- ❗ ❌无法成功连接到服务器，可能是网络问题或认证失败。\n\n"
-                    f"📘 [点击这里查看排查指南]({WEBSITE})"
+                    f"**🚫 登录失败通知（第 {retry_attempt} 次）**\n\n"
+                    f"- 👤 用户名: `{self.entry.data['username']}`\n"
+                    f"- 🔐 登录未成功，可能由于密码错误或服务器问题。\n"
+                    f"- ⏳ 系统将在 **{wait_time} 秒后（约 {next_try_str}）** 自动再次尝试。\n\n"
+                    f"📘 [点击查看使用说明]({WEBSITE})"
                 )
-                self._notify(f"{self.entry.data.get('name')} ❌连接失败", message)
+                self._notify(f"{self.entry.data.get('name')} 登录失败", message)
 
-            finally:
-                if self.tunnel_client:
-                    try:
-                        self.tunnel_client.close()
-                        self.tunnel_client = None
-                    except Exception:
-                        pass
+                # 如果 stop_event 没被触发，则等待后继续重试
+                if not self._stop_event.wait(wait_time):
+                    continue
+                else:
+                    break
 
-                if self.forward_server:
-                    self.forward_server.stop()
+            # 登录成功，重置重试计数
+            retry_attempt = 0
 
-                if not self._stop_event.is_set():
-                    # _LOGGER.info("⏳ Retrying in 5 seconds...")
-                    self._stop_event.wait(5)
+            self.tunnel_client = paramiko.SSHClient()
+            self.tunnel_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            _LOGGER.info("🔗 Connecting to Tunnel server...")
 
-        _LOGGER.info("Tunnel maintenance thread has fully stopped.")
+            self.tunnel_client.connect(
+                info.get("tunnel_server"),
+                port=int(info.get("tunnel_port")),
+                username=info.get("tunnel_user"),
+                password=info.get("tunnel_password"),
+                timeout=15,
+            )
+
+            self.tunnel_client.get_transport().set_keepalive(30)
+            transport = self.tunnel_client.get_transport()
+            if not transport:
+                raise Exception("Failed to get transport")
+
+            self.forward_server = ForwardServer(
+                transport,
+                self.LOCAL_HOST,
+                self.local_port,
+                notify_func=self._notify,
+                entry=self.entry,
+                login_info=info,
+            )
+            self.forward_server.start()
+
+            _LOGGER.info("🚀 Tunnel established")
+
+            while transport.is_active() and not self._stop_event.is_set():
+                time.sleep(0.5)
+
+        except Exception as e:
+            _LOGGER.error(f"❌ Error during connection or maintenance: {e}")
+            message = (
+                f"**🚫 隧道连接失败**\n\n"
+                f"- ❗ 无法成功连接到服务器，可能是网络问题或认证失败。\n\n"
+                f"📘 [点击这里查看排查指南]({WEBSITE})"
+            )
+            self._notify(f"{self.entry.data.get('name')} ❌连接失败", message)
+
+        finally:
+            if self.tunnel_client:
+                try:
+                    self.tunnel_client.close()
+                    self.tunnel_client = None
+                except Exception:
+                    pass
+
+            if self.forward_server:
+                self.forward_server.stop()
+                self.forward_server = None
+
+            # 如果不是被 stop_event 主动中断，则短暂等待后自动重试连接
+            if not self._stop_event.is_set():
+                _LOGGER.info("⏳ Tunnel closed. Retrying in 5 seconds...")
+                self._stop_event.wait(5)
+
+    _LOGGER.info("✅ Tunnel maintenance thread has fully stopped.")
 
     def start(self):
         with self._lock:
