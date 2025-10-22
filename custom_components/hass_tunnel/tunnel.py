@@ -182,21 +182,45 @@ class ManagedTunnel:
         )
 
     def _maintain_loop(self):
+        
+        retry_attempt = 0
+        last_reset_time = time.time()  # 记录上次重置时间
+        
         while not self._stop_event.is_set():
             try:
                 success, info = login_with_retry(
                     self.entry.data["username"], self.entry.data["password"], AUTH_URL
                 )
                 if not success:
-                    _LOGGER.warning("❌ Login failed")
+                    retry_attempt += 1
+                    # 指数级增长，最大 3600 秒（1小时）
+                    wait_time = min(5 * (2 ** (retry_attempt - 1)), 3600)
+
+                    _LOGGER.warning(f"❌ 登录失败 (第 {retry_attempt} 次)，将在 {wait_time}s 后重试")
                     message = (
-                        f"**🚫 登录失败通知**\n\n"
+                        f"**🚫 登录失败通知（第 {retry_attempt} 次）**\n\n"
                         f"- 👤 用户名: `{self.entry.data['username']}`\n"
-                        f"- 🔐 ❌ 登录未成功，可能由于密码错误或服务器问题。\n问题修正后需要重启Home Assistant\n\n"
+                        f"- 🔐 登录未成功，可能由于密码错误或服务器问题。\n"
+                        f"- ⏳ 系统将在 {wait_time} 秒后自动重试。\n\n"
                         f"📘 [点击查看使用说明]({WEBSITE})"
                     )
                     self._notify(f"{self.entry.data.get('name')} 登录失败", message)
-                    return  # 中断逻辑，不再继续
+                    #return  # 中断逻辑，不再继续
+                        # 检查是否需要重置指数计数（每24小时重置一次）
+                    if time.time() - last_reset_time > 86400:  # 24小时 = 86400秒
+                        retry_attempt = 0
+                        last_reset_time = time.time()
+                        _LOGGER.info("🔄 已过24小时，重置登录重试等待时间。")
+            
+                    # 等待后继续重试
+                    if not self._stop_event.wait(wait_time):
+                        continue
+                    else:
+                        break
+                else:
+                    # 登录成功，重置状态
+                    retry_attempt = 0
+                    last_reset_time = time.time()
 
                 self.tunnel_client = paramiko.SSHClient()
                 self.tunnel_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
