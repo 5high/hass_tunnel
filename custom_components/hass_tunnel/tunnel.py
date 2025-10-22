@@ -92,7 +92,7 @@ class ForwardServer(threading.Thread):
                 message = (
                     f"**✅ 隧道已成功建立！**\n\n"
                     f"- \U0001f4e1 专属访问地址：[{self.login_info.get('url')}]({self.login_info.get('url')})\n\n\n"
-                    f"📘 [领取官方硬件优惠券](https://sumju.net/?p=7943)"
+                    f"💲[领取官方硬件优惠券]💲(https://sumju.net/?p=7943)"
                 )
                 self.notify(
                     f"{self.entry.data.get('name')} 启动成功",
