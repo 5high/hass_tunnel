@@ -1,316 +1,198 @@
-import paramiko
-import socket
-import select
-import threading
-import time
+from __future__ import annotations
+
 import logging
-import requests
+from typing import Any
+
+import aiohttp
 import asyncio
+import voluptuous as vol
 
-from .const import AUTH_URL, WEBSITE
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers import issue_registry as ir
+from homeassistant.loader import async_get_integration
 
-from homeassistant.helpers.translation import async_get_translations
+from ruamel.yaml import YAML
 
-# --- Basic Logging Setup ---
+from .const import DOMAIN, AUTH_URL, WEBSITE
+
+import os
+from pathlib import Path
+
+
 _LOGGER = logging.getLogger(__name__)
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+
+STEP_USER_DATA_SCHEMA = vol.Schema(
+    {
+        vol.Required(
+            "username",
+        ): str,
+        vol.Required(
+            "password",
+        ): str,
+    }
 )
-logging.getLogger("paramiko").setLevel(logging.WARNING)
 
 
-class ParamikoFilter(logging.Filter):
-    def filter(self, record: logging.LogRecord) -> bool:
-        return "Error reading SSH protocol banner" not in record.getMessage()
+async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
+    session = async_get_clientsession(hass)
+    payload = {
+        "username": data[CONF_USERNAME],
+        "password": data[CONF_PASSWORD],
+    }
 
+    _LOGGER.debug(f"Trying to authenticate with {AUTH_URL}")
 
-paramiko_transport_logger = logging.getLogger("paramiko.transport")
-paramiko_transport_logger.setLevel(logging.CRITICAL)
-paramiko_transport_logger.propagate = False
-paramiko_transport_logger.handlers.clear()
-paramiko_transport_logger.addFilter(ParamikoFilter())
-
-
-def login_successful(username, password, url):
-    payload = {"username": username, "password": password}
     try:
-        response = requests.post(url, json=payload)
-        response.raise_for_status()
-        data = response.json()
-        success = data.get("success", False) is True
-        return success, data
-    except requests.RequestException as e:
-        _LOGGER.error(f"Login request failed: {e}")
-        return False, {}
+        async with session.post(AUTH_URL, json=payload, timeout=10) as response:
+            if response.status == 200:
+                _LOGGER.info("Authentication successful")
+            elif response.status in (401, 403, 400):
+                _LOGGER.warning("Authentication failed: Invalid credentials")
+                # raise InvalidAuth
+                try:
+                    error_json = await response.json()
+                    message = error_json.get("message", "认证失败")
+                except Exception:
+                    message = "Authentication failed"
+                raise AuthFailedWithMessage(message)
+            else:
+                _LOGGER.error(f"Connection failed: HTTP status {response.status}")
+                raise CannotConnect
+
+    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        _LOGGER.error(f"Unable to connect to API server: {exc}")
+        raise CannotConnect
 
 
-def login_with_retry(
-    username, password, url, delay=2, backoff_factor=2, max_attempts=8
-):
-    attempt = 1
-    while attempt <= max_attempts:
-        success, data = login_successful(username, password, url)
-        if success:
-            return True, data
-        else:
-            _LOGGER.warning(f"Login attempt {attempt} failed. Retrying in {delay}s...")
-            time.sleep(delay)
-            delay *= backoff_factor
-            attempt += 1
-
-    _LOGGER.error("Max login attempts reached. Login failed.")
-    return False, None
+class AuthFailedWithMessage(HomeAssistantError):
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
 
 
-class ForwardServer(threading.Thread):
-    def __init__(
-        self,
-        transport,
-        local_host,
-        local_port,
-        notify_func=None,
-        entry=None,
-        login_info=None,
-    ):
-        super().__init__()
-        self.transport = transport
-        self.remote_port = login_info.get("fwd_port")
-        self.local_host = local_host
-        self.local_port = local_port
-        self.notify = notify_func
-        self.SERVER_IP = login_info.get("tunnel_server")
-        self.login_info = login_info or {}
-        self.entry = entry
-        self.daemon = True
-        self._stop_event = threading.Event()
+class ConfigFlow(ConfigFlow, domain=DOMAIN):
+    """Handle the HA Tunnel configuration flow."""
 
-    def run(self):
-        try:
-            self.transport.request_port_forward("127.0.0.1", self.remote_port)
-            _LOGGER.info(f"✅ Successfully started tunnel.")
-            if self.notify:
-                message = (
-                    f"**✅ 隧道已成功建立！**\n\n"
-                    f"- \U0001f4e1 专属访问地址：[{self.login_info.get('url')}]({self.login_info.get('url')})\n\n\n"
-                    f"📘 [查看使用说明]({WEBSITE})"
-                )
-                self.notify(
-                    f"{self.entry.data.get('name')} 启动成功",
-                    message,
-                    notification_id="hass_tunnel_started",
-                )
-        except Exception as e:
-            _LOGGER.warning(f"⚠️ Failed to listen on tunnel server: {e}")
+    VERSION = 1
 
-        while not self._stop_event.is_set() and self.transport.is_active():
+    async def ensure_http_proxy_config(self):
+        # 常见的配置文件路径列表（可按需扩展）
+        CONFIG_PATHS = [
+            "config/configuration.yaml",
+            "/config/configuration.yaml",
+        ]
+
+        def find_config_file():
+            for path in CONFIG_PATHS:
+                if os.path.exists(path):
+                    return path
+            _LOGGER.warning("couldn't find any Home Assistant configuration file")
+            return None
+
+        def _sync_update():
+            CONFIG_FILE = find_config_file()
+            if not CONFIG_FILE or not os.path.exists(CONFIG_FILE):
+                _LOGGER.warning(f"Config file missing: {CONFIG_FILE}, skipping update")
+                return
+
+            yaml = YAML()
+            yaml.preserve_quotes = True
+
+            with open(CONFIG_FILE, "r") as f:
+                config = yaml.load(f) or {}
+
+            http_config = config.get("http", {})
+            changed = False
+
+            if not isinstance(http_config, dict):
+                http_config = {}
+                changed = True
+
+            if not http_config.get("use_x_forwarded_for", False):
+                http_config["use_x_forwarded_for"] = True
+                changed = True
+
+            trusted_proxies = http_config.get("trusted_proxies", [])
+            if not isinstance(trusted_proxies, list):
+                trusted_proxies = []
+                changed = True
+
+            if "127.0.0.1" not in trusted_proxies:
+                trusted_proxies.append("127.0.0.1")
+                http_config["trusted_proxies"] = trusted_proxies
+                changed = True
+
+            if changed:
+                config["http"] = http_config
+                with open(CONFIG_FILE, "w") as f:
+                    yaml.dump(config, f)
+                _LOGGER.info(f"HTTP configuration updated in {CONFIG_FILE}")
+            else:
+                _LOGGER.info("HTTP configuration already present, no update needed")
+
+        await self.hass.async_add_executor_job(_sync_update)
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if self._async_current_entries():
+            return self.async_abort(reason="single_instance_allowed")
+
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
             try:
-                chan = self.transport.accept(timeout=1)
-                if chan is None:
-                    continue
-                thr = threading.Thread(target=self.handler, args=(chan,), daemon=True)
-                thr.start()
+                await validate_input(self.hass, user_input)
+            except AuthFailedWithMessage as e:
+                errors["base"] = "auth_failed_custom"
+                self._custom_error_message = e.message  # 保存自定义错误文本
+            except CannotConnect:
+                errors["base"] = "cannot_connect"
+            except InvalidAuth:
+                errors["base"] = "invalid_auth"
             except Exception:
-                pass
-        _LOGGER.info("Listener for remote port has stopped.")
+                _LOGGER.exception("Unexpected exception during authentication")
+                errors["base"] = "unknown"
+            else:
+                # Load integration name from manifest and store in entry data
+                integration = await async_get_integration(self.hass, DOMAIN)
+                name = integration.manifest.get("name", DOMAIN)
+                await self.ensure_http_proxy_config()
 
-    def handler(self, chan):
-        try:
-            with socket.create_connection((self.local_host, self.local_port)) as sock:
-                # _LOGGER.info(f"🔁 Forwarding: {self.local_host}:{self.local_port}")
-                while not self._stop_event.is_set():
-                    r, _, _ = select.select([sock, chan], [], [], 1)
-                    if not r:
-                        continue
-                    if sock in r:
-                        data = sock.recv(4096)
-                        if not data:
-                            break
-                        chan.send(data)
-                    if chan in r:
-                        data = chan.recv(4096)
-                        if not data:
-                            break
-                        sock.send(data)
-                # _LOGGER.info("🔚 Forwarding connection closed")
-        except Exception as e:
-            _LOGGER.warning("⚠️ Error during data forwarding")
-        finally:
-            chan.close()
+                # 在创建配置条目之前添加重启建议
+                ir.async_create_issue(
+                    self.hass,
+                    DOMAIN,
+                    "restart_required_after_config",
+                    is_fixable=False,
+                    severity=ir.IssueSeverity.WARNING,
+                    translation_key="restart_required_after_config",
+                    translation_placeholders={"integration_name": name},
+                )
 
-    def stop(self):
-        self._stop_event.set()
-        try:
-            self.transport.cancel_port_forward("127.0.0.1", self.remote_port)
-            _LOGGER.info(f"✅ Tunnel service cancelled successfully")
-        except Exception as e:
-            _LOGGER.warning(f"❌ Failed to cancel port forwarding: {e}")
+                return self.async_create_entry(
+                    title=name,
+                    data={**user_input, "name": name},
+                )
 
-
-class ManagedTunnel:
-    def __init__(self, entry, hass, local_port):
-        self._lock = threading.Lock()
-        self._is_running = False
-        self.hass = hass
-        self.entry = entry
-        self.SERVER_PORT = 22
-        self.LOCAL_HOST = "127.0.0.1"
-        self.local_port = local_port
-
-        self.tunnel_client = None
-        self.forward_server = None
-        self._maintain_thread = None
-        self._stop_event = threading.Event()
-
-    def _notify(self, title, message, notification_id="hass_tunnel_notification"):
-        hass = getattr(self, "hass", None) or getattr(self.entry, "hass", None)
-        if not hass:
-            _LOGGER.warning("无法获取 Home Assistant 实例，无法发送通知")
-            return
-
-        asyncio.run_coroutine_threadsafe(
-            hass.services.async_call(
-                "persistent_notification",
-                "create",
-                {
-                    "title": title,
-                    "message": message,
-                    "notification_id": notification_id,
-                },
-                blocking=False,
-            ),
-            hass.loop,
+        return self.async_show_form(
+            step_id="user",
+            data_schema=STEP_USER_DATA_SCHEMA,
+            errors=errors,
+            description_placeholders={
+                "get_credentials_url": WEBSITE,
+                "custom_error": getattr(self, "_custom_error_message", ""),
+            },
         )
 
-def _maintain_loop(self):
-    BASE_DELAY = 5       # 初始等待时间（秒）
-    MAX_DELAY = 300      # 最大等待时间（秒）
-    retry_attempt = 0    # 登录失败计数
 
-    while not self._stop_event.is_set():
-        try:
-            success, info = login_with_retry(
-                self.entry.data["username"], 
-                self.entry.data["password"], 
-                AUTH_URL
-            )
+class CannotConnect(HomeAssistantError):
+    """Error to indicate we cannot connect."""
 
-            if not success:
-                retry_attempt += 1
-                # 计算指数级延迟时间
-                wait_time = min(BASE_DELAY * (2 ** (retry_attempt - 1)), MAX_DELAY)
-                next_try_time = datetime.now() + timedelta(seconds=wait_time)
-                next_try_str = next_try_time.strftime("%H:%M:%S")
 
-                _LOGGER.warning(
-                    f"❌ 登录失败 (第 {retry_attempt} 次)，将在 {wait_time}s 后（约 {next_try_str}）重试"
-                )
-
-                message = (
-                    f"**🚫 登录失败通知（第 {retry_attempt} 次）**\n\n"
-                    f"- 👤 用户名: `{self.entry.data['username']}`\n"
-                    f"- 🔐 登录未成功，可能由于密码错误或服务器问题。\n"
-                    f"- ⏳ 系统将在 **{wait_time} 秒后（约 {next_try_str}）** 自动再次尝试。\n\n"
-                    f"📘 [点击查看使用说明]({WEBSITE})"
-                )
-                self._notify(f"{self.entry.data.get('name')} 登录失败", message)
-
-                # 如果 stop_event 没被触发，则等待后继续重试
-                if not self._stop_event.wait(wait_time):
-                    continue
-                else:
-                    break
-
-            # 登录成功，重置重试计数
-            retry_attempt = 0
-
-            self.tunnel_client = paramiko.SSHClient()
-            self.tunnel_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            _LOGGER.info("🔗 Connecting to Tunnel server...")
-
-            self.tunnel_client.connect(
-                info.get("tunnel_server"),
-                port=int(info.get("tunnel_port")),
-                username=info.get("tunnel_user"),
-                password=info.get("tunnel_password"),
-                timeout=15,
-            )
-
-            self.tunnel_client.get_transport().set_keepalive(30)
-            transport = self.tunnel_client.get_transport()
-            if not transport:
-                raise Exception("Failed to get transport")
-
-            self.forward_server = ForwardServer(
-                transport,
-                self.LOCAL_HOST,
-                self.local_port,
-                notify_func=self._notify,
-                entry=self.entry,
-                login_info=info,
-            )
-            self.forward_server.start()
-
-            _LOGGER.info("🚀 Tunnel established")
-
-            while transport.is_active() and not self._stop_event.is_set():
-                time.sleep(0.5)
-
-        except Exception as e:
-            _LOGGER.error(f"❌ Error during connection or maintenance: {e}")
-            message = (
-                f"**🚫 隧道连接失败**\n\n"
-                f"- ❗ 无法成功连接到服务器，可能是网络问题或认证失败。\n\n"
-                f"📘 [点击这里查看排查指南]({WEBSITE})"
-            )
-            self._notify(f"{self.entry.data.get('name')} ❌连接失败", message)
-
-        finally:
-            if self.tunnel_client:
-                try:
-                    self.tunnel_client.close()
-                    self.tunnel_client = None
-                except Exception:
-                    pass
-
-            if self.forward_server:
-                self.forward_server.stop()
-                self.forward_server = None
-
-            # 如果不是被 stop_event 主动中断，则短暂等待后自动重试连接
-            if not self._stop_event.is_set():
-                _LOGGER.info("⏳ Tunnel closed. Retrying in 5 seconds...")
-                self._stop_event.wait(5)
-
-    _LOGGER.info("✅ Tunnel maintenance thread has fully stopped.")
-
-    def start(self):
-        with self._lock:
-            if self._is_running:
-                _LOGGER.warning("Tunnel is already running (checked by flag).")
-                return
-            self._stop_event.clear()
-            self._is_running = True
-            self._maintain_thread = threading.Thread(
-                target=self._maintain_loop, daemon=True
-            )
-            self._maintain_thread.start()
-            _LOGGER.info("Tunnel manager started.")
-
-    def stop(self):
-        _LOGGER.info("🛑 Stopping tunnel...")
-        self._stop_event.set()
-
-        if self.forward_server:
-            self.forward_server.stop()
-            self.forward_server = None
-
-        if self.tunnel_client:
-            self.tunnel_client.close()
-
-        if self._maintain_thread:
-            self._maintain_thread.join(timeout=7)
-            if self._maintain_thread.is_alive():
-                _LOGGER.warning("Maintenance thread did not shut down cleanly.")
-
-        _LOGGER.info("Tunnel disconnected.")
-        self._is_running = False
+class InvalidAuth(HomeAssistantError):
+    """Error to indicate there is invalid auth."""
