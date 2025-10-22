@@ -1,7 +1,7 @@
 {
   "domain": "hass_tunnel",
   "name": "HA Tunnel",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "config_flow": true,
   "codeowners": [
     "@5high"
