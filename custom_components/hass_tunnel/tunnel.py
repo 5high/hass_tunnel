@@ -45,7 +45,7 @@ def login_successful(username, password, url):
 
 
 def login_with_retry(
-    username, password, url, delay=2, backoff_factor=2, max_attempts=8
+    username, password, url, delay=2, backoff_factor=2, max_attempts=5
 ):
     attempt = 1
     while attempt <= max_attempts:
