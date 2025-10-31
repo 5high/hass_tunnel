@@ -133,7 +133,7 @@ class ForwardServer(threading.Thread):
                         sock.send(data)
                 # _LOGGER.info("🔚 Forwarding connection closed")
         except Exception as e:
-            _LOGGER.warning("⚠️ Error during data forwarding")
+            _LOGGER.warning("⚠️ Error during data forwarding : {e}")
         finally:
             chan.close()
 
