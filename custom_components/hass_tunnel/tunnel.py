@@ -8,6 +8,7 @@ import requests
 import asyncio
 
 from .const import AUTH_URL, WEBSITE
+from .traffic import build_traffic_brief, build_traffic_message, fetch_traffic
 
 from homeassistant.helpers.translation import async_get_translations
 
@@ -83,6 +84,9 @@ class ForwardServer(threading.Thread):
         self.entry = entry
         self.daemon = True
         self._stop_event = threading.Event()
+        # 用于查询流量的账号凭据（entry 里已经存了，插件本来就要用）
+        self.username = (entry.data.get("username") if entry else None) or ""
+        self.password = (entry.data.get("password") if entry else None) or ""
 
     def run(self):
         try:
@@ -94,6 +98,15 @@ class ForwardServer(threading.Thread):
                     f"- \U0001f4e1 专属访问地址：[{self.login_info.get('url')}]({self.login_info.get('url')})\n\n\n"
                     f"[💲领取官方硬件优惠券💲](https://sumju.net/?p=7943)"
                 )
+                # 追加流量信息（查询失败不影响通知本身）
+                try:
+                    traffic = fetch_traffic(self.username, self.password, hours=24)
+                    traffic_text = build_traffic_message(traffic, hours=24)
+                    if traffic_text:
+                        message += "\n\n---\n" + traffic_text
+                except Exception as e:  # noqa: BLE001 - 流量是附加信息，绝不能让通知失败
+                    _LOGGER.warning("获取流量信息失败: %s", e)
+
                 self.notify(
                     f"{self.entry.data.get('name')} 启动成功",
                     message,
@@ -204,6 +217,18 @@ class ManagedTunnel:
                         f"- ⏳ 系统将在 {wait_time} 秒后自动重试。\n\n"
                         f"📘 [点击查看使用说明]({WEBSITE})"
                     )
+                    # 追加一行流量摘要（尽力而为）
+                    try:
+                        traffic = fetch_traffic(
+                            self.entry.data.get("username"),
+                            self.entry.data.get("password"),
+                            hours=24,
+                        )
+                        brief = build_traffic_brief(traffic, hours=24)
+                        if brief:
+                            message += "\n\n" + brief
+                    except Exception as e:  # noqa: BLE001
+                        _LOGGER.warning("获取流量信息失败: %s", e)
                     self._notify(f"{self.entry.data.get('name')} 登录失败", message)
                     #return  # 中断逻辑，不再继续
                         # 检查是否需要重置指数计数（每24小时重置一次）
@@ -259,6 +284,18 @@ class ManagedTunnel:
                     f"- ❗ ❌无法成功连接到服务器，可能是网络问题或认证失败。\n\n"
                     f"📘 [点击这里查看排查指南]({WEBSITE})"
                 )
+                # 追加一行流量摘要（尽力而为）
+                try:
+                    traffic = fetch_traffic(
+                        self.entry.data.get("username"),
+                        self.entry.data.get("password"),
+                        hours=24,
+                    )
+                    brief = build_traffic_brief(traffic, hours=24)
+                    if brief:
+                        message += "\n\n" + brief
+                except Exception as e:  # noqa: BLE001
+                    _LOGGER.warning("获取流量信息失败: %s", e)
                 self._notify(f"{self.entry.data.get('name')} ❌连接失败", message)
 
             finally:
