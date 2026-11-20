@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 
 import requests
 
-from .const import TRAFFIC_SELF_URL, WEBSITE
+from .const import MQTT_SELF_URL, TRAFFIC_SELF_URL, WEBSITE
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -159,4 +159,65 @@ def build_traffic_brief(traffic: dict, hours: int = 24) -> str:
     return (
         f"📊 近 {hours} 小时流量：↓ {format_bytes(download)} / ↑ {format_bytes(upload)}"
         f"（合计 {format_bytes(total)}）"
+    )
+
+
+def fetch_mqtt_status(username: str, password: str) -> dict:
+    """
+    查询账号的 MQTT 开通状态（POST {WEBSITE}/api/v1/mqtt/self）。
+
+    返回 {"ok": True, "provisioned": bool, "active": bool, "page": url}；
+    失败时返回 {"ok": False, ...}，绝不抛异常。
+    """
+    if not username or not password:
+        return {"ok": False, "error": "缺少账号或密码"}
+
+    try:
+        response = requests.post(
+            MQTT_SELF_URL,
+            json={"username": username, "password": password},
+            timeout=REQUEST_TIMEOUT,
+        )
+    except requests.RequestException as e:
+        _LOGGER.warning("查询 MQTT 开通状态失败: %s", e)
+        return {"ok": False, "error": str(e)}
+
+    if response.status_code != 200:
+        _LOGGER.warning("查询 MQTT 开通状态返回 HTTP %s", response.status_code)
+        return {"ok": False, "error": f"HTTP {response.status_code}"}
+
+    try:
+        data = response.json()
+    except ValueError:
+        return {"ok": False, "error": "invalid json"}
+
+    if not data.get("success"):
+        return {"ok": False, "error": data.get("message", "unknown error")}
+
+    return {
+        "ok": True,
+        "provisioned": bool(data.get("provisioned")),
+        "active": bool(data.get("active")),
+        "page": data.get("page") or (WEBSITE + "/mqtt"),
+    }
+
+
+def build_mqtt_message(mqtt: dict) -> str:
+    """把 MQTT 状态拼成通知文本；查询失败返回空串（不影响通知本身）。"""
+    if not mqtt or not mqtt.get("ok"):
+        return ""
+
+    page = mqtt.get("page", WEBSITE + "/mqtt")
+    if not mqtt.get("provisioned"):
+        return (
+            "📡 MQTT 服务：未开通 — 可免费注册，用于设备推送 / 远程控制。\n"
+            f"   👉 [点击开通 MQTT]({page})"
+        )
+    if not mqtt.get("active"):
+        return (
+            "📡 MQTT 服务：已开通但当前处于停用状态，"
+            f'可在 [MQTT 页面]({page}) 重新启用。'
+        )
+    return (
+        f"📡 MQTT 服务：已开通 ✅（管理 / 重置密码：[MQTT 页面]({page})）"
     )
