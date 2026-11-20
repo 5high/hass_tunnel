@@ -8,7 +8,13 @@ import requests
 import asyncio
 
 from .const import AUTH_URL, WEBSITE
-from .traffic import build_traffic_brief, build_traffic_message, fetch_traffic
+from .traffic import (
+    build_mqtt_message,
+    build_traffic_brief,
+    build_traffic_message,
+    fetch_mqtt_status,
+    fetch_traffic,
+)
 
 from homeassistant.helpers.translation import async_get_translations
 
@@ -105,6 +111,15 @@ class ForwardServer(threading.Thread):
                         message += "\n\n---\n" + traffic_text
                 except Exception as e:  # noqa: BLE001 - 流量是附加信息，绝不能让通知失败
                     _LOGGER.warning("获取流量信息失败: %s", e)
+
+                # 追加 MQTT 开通状态提示（查询失败同样不影响通知）
+                try:
+                    mqtt = fetch_mqtt_status(self.username, self.password)
+                    mqtt_text = build_mqtt_message(mqtt)
+                    if mqtt_text:
+                        message += "\n\n" + mqtt_text
+                except Exception as e:  # noqa: BLE001 - MQTT 状态是附加信息，绝不能让通知失败
+                    _LOGGER.warning("获取 MQTT 开通状态失败: %s", e)
 
                 self.notify(
                     f"{self.entry.data.get('name')} 启动成功",
