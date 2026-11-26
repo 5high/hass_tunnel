@@ -7,7 +7,7 @@ import logging
 import requests
 import asyncio
 
-from .const import AUTH_URL, WEBSITE
+from .const import AUTH_URL, TRAFFIC_REFRESH_SECONDS, WEBSITE
 from .traffic import (
     build_mqtt_message,
     build_traffic_brief,
@@ -94,36 +94,40 @@ class ForwardServer(threading.Thread):
         self.username = (entry.data.get("username") if entry else None) or ""
         self.password = (entry.data.get("password") if entry else None) or ""
 
+    def build_success_message(self) -> str:
+        """拼装隧道成功通知正文（流量 + MQTT 状态均为尽力而为，失败只省略该段）。"""
+        message = (
+            f"**✅ 隧道已成功建立！**\n\n"
+            f"- \U0001f4e1 专属访问地址：[{self.login_info.get('url')}]({self.login_info.get('url')})"
+        )
+        # 追加流量信息（查询失败不影响通知本身）
+        try:
+            traffic = fetch_traffic(self.username, self.password, hours=24)
+            traffic_text = build_traffic_message(traffic, hours=24)
+            if traffic_text:
+                message += "\n\n---\n" + traffic_text
+        except Exception as e:  # noqa: BLE001 - 流量是附加信息，绝不能让通知失败
+            _LOGGER.warning("获取流量信息失败: %s", e)
+
+        # 追加 MQTT 开通状态提示（查询失败同样不影响通知）
+        try:
+            mqtt = fetch_mqtt_status(self.username, self.password)
+            mqtt_text = build_mqtt_message(mqtt)
+            if mqtt_text:
+                message += "\n\n" + mqtt_text
+        except Exception as e:  # noqa: BLE001 - MQTT 状态是附加信息，绝不能让通知失败
+            _LOGGER.warning("获取 MQTT 开通状态失败: %s", e)
+
+        return message
+
     def run(self):
         try:
             self.transport.request_port_forward("127.0.0.1", self.remote_port)
             _LOGGER.info(f"✅ Successfully started tunnel.")
             if self.notify:
-                message = (
-                    f"**✅ 隧道已成功建立！**\n\n"
-                    f"- \U0001f4e1 专属访问地址：[{self.login_info.get('url')}]({self.login_info.get('url')})"
-                )
-                # 追加流量信息（查询失败不影响通知本身）
-                try:
-                    traffic = fetch_traffic(self.username, self.password, hours=24)
-                    traffic_text = build_traffic_message(traffic, hours=24)
-                    if traffic_text:
-                        message += "\n\n---\n" + traffic_text
-                except Exception as e:  # noqa: BLE001 - 流量是附加信息，绝不能让通知失败
-                    _LOGGER.warning("获取流量信息失败: %s", e)
-
-                # 追加 MQTT 开通状态提示（查询失败同样不影响通知）
-                try:
-                    mqtt = fetch_mqtt_status(self.username, self.password)
-                    mqtt_text = build_mqtt_message(mqtt)
-                    if mqtt_text:
-                        message += "\n\n" + mqtt_text
-                except Exception as e:  # noqa: BLE001 - MQTT 状态是附加信息，绝不能让通知失败
-                    _LOGGER.warning("获取 MQTT 开通状态失败: %s", e)
-
                 self.notify(
                     f"{self.entry.data.get('name')} 启动成功",
-                    message,
+                    self.build_success_message(),
                     notification_id="hass_tunnel_started",
                 )
         except Exception as e:
@@ -288,8 +292,22 @@ class ManagedTunnel:
 
                 _LOGGER.info("🚀 Tunnel established")
 
+                # 隧道在线期间定期刷新流量通知（同 ID 更新，不产生新通知）
                 while transport.is_active() and not self._stop_event.is_set():
-                    time.sleep(0.5)
+                    if self._stop_event.wait(TRAFFIC_REFRESH_SECONDS):
+                        break
+                    if not (transport.is_active() and self.forward_server is not None):
+                        break
+                    try:
+                        message = self.forward_server.build_success_message()
+                        self._notify(
+                            f"{self.entry.data.get('name')} 运行中",
+                            message,
+                            notification_id="hass_tunnel_started",
+                        )
+                        _LOGGER.info("🔄 流量通知已刷新")
+                    except Exception as e:  # noqa: BLE001 - 刷新失败不影响隧道
+                        _LOGGER.warning("刷新流量通知失败: %s", e)
 
             except Exception as e:
                 _LOGGER.error(f"❌ Error during connection or maintenance ")

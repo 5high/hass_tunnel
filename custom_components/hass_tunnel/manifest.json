@@ -1,13 +1,15 @@
 {
   "domain": "hass_tunnel",
   "name": "HA Tunnel",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "config_flow": true,
   "codeowners": [
     "@5high"
   ],
   "documentation": "https://github.com/5high/hass_tunnel",
-  "dependencies": ["system_health"],
+  "dependencies": [
+    "system_health"
+  ],
   "iot_class": "cloud_pull",
   "quality_scale": "bronze",
   "requirements": [
