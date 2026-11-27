@@ -20,6 +20,28 @@ from homeassistant.helpers.translation import async_get_translations
 
 # --- Basic Logging Setup ---
 _LOGGER = logging.getLogger(__name__)
+
+
+def format_duration(seconds) -> str:
+    """把秒数换算成人类可读的时长（如 1天2小时 / 3小时5分钟 / 12分钟 / 45秒）。"""
+    try:
+        s = int(seconds or 0)
+    except (TypeError, ValueError):
+        return "0秒"
+    if s < 60:
+        return f"{s}秒"
+    parts = []
+    days, rem = divmod(s, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days:
+        parts.append(f"{days}天")
+    if hours:
+        parts.append(f"{hours}小时")
+    if minutes and not days:  # 天数级别不再显示分钟
+        parts.append(f"{minutes}分钟")
+    return " ".join(parts) if parts else "1分钟"
+
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
@@ -94,12 +116,17 @@ class ForwardServer(threading.Thread):
         self.username = (entry.data.get("username") if entry else None) or ""
         self.password = (entry.data.get("password") if entry else None) or ""
 
-    def build_success_message(self) -> str:
-        """拼装隧道成功通知正文（流量 + MQTT 状态均为尽力而为，失败只省略该段）。"""
+    def build_success_message(self, uptime_seconds=None) -> str:
+        """拼装隧道成功通知正文（流量 + MQTT 状态均为尽力而为，失败只省略该段）。
+
+        uptime_seconds: 本次连接已运行秒数；None 表示刚建立（不显示运行时长）。
+        """
         message = (
             f"**✅ 隧道已成功建立！**\n\n"
-            f"- \U0001f4e1 专属访问地址：[{self.login_info.get('url')}]({self.login_info.get('url')})"
+            f"- 📡 专属访问地址：[{self.login_info.get('url')}]({self.login_info.get('url')})"
         )
+        if uptime_seconds is not None:
+            message += f"\n- ⏱️ 已运行：{format_duration(uptime_seconds)}"
         # 追加流量信息（查询失败不影响通知本身）
         try:
             traffic = fetch_traffic(self.username, self.password, hours=24)
@@ -227,12 +254,12 @@ class ManagedTunnel:
                     # 指数级增长，最大 3600 秒（1小时）
                     wait_time = min(5 * (2 ** (retry_attempt - 1)), 3600)
 
-                    _LOGGER.warning(f"❌ 登录失败 (第 {retry_attempt} 次)，将在 {wait_time}s 后重试")
+                    _LOGGER.warning(f"❌ 登录失败 (第 {retry_attempt} 次)，将在 {format_duration(wait_time)}后重试")
                     message = (
                         f"**🚫 登录失败通知（第 {retry_attempt} 次）**\n\n"
                         f"- 👤 用户名: `{self.entry.data['username']}`\n"
                         f"- 🔐 登录未成功，可能由于密码错误或服务器问题。\n"
-                        f"- ⏳ 系统将在 {wait_time} 秒后自动重试。\n\n"
+                        f"- ⏳ 系统将在 {format_duration(wait_time)}后自动重试。\n\n"
                         f"📘 [点击查看使用说明]({WEBSITE})"
                     )
                     # 追加一行流量摘要（尽力而为）
@@ -291,6 +318,7 @@ class ManagedTunnel:
                 self.forward_server.start()
 
                 _LOGGER.info("🚀 Tunnel established")
+                connected_at = time.time()
 
                 # 隧道在线期间定期刷新流量通知（同 ID 更新，不产生新通知）
                 while transport.is_active() and not self._stop_event.is_set():
@@ -299,7 +327,9 @@ class ManagedTunnel:
                     if not (transport.is_active() and self.forward_server is not None):
                         break
                     try:
-                        message = self.forward_server.build_success_message()
+                        message = self.forward_server.build_success_message(
+                            uptime_seconds=time.time() - connected_at
+                        )
                         self._notify(
                             f"{self.entry.data.get('name')} 运行中",
                             message,
